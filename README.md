@@ -446,3 +446,49 @@ A skill deve atingir os seguintes mínimos em **todos os 3 projetos**:
 - **Projetos diferentes exigem adaptação** — a Fase 3 de um projeto já parcialmente organizado não vai ter as mesmas transformações de um monolito. Sua skill deve se adaptar ao contexto.
 - **Pedir confirmação na Fase 2 é obrigatório** — o humano deve revisar o relatório antes de qualquer modificação.
 - **Consulte as referências do curso** — revise a documentação oficial da ferramenta escolhida e os materiais das aulas para relembrar a estrutura e anatomia de uma skill.
+
+---
+
+# Documentação da Solução
+
+> As seções abaixo (Análise Manual, Construção da Skill, Resultados e Como Executar) são a documentação exigida pelo desafio, produzida durante a resolução deste repositório.
+
+## Análise Manual
+
+Análise de código feita antes de construir a skill, para entender concretamente os problemas que ela precisaria detectar e corrigir. Os achados abaixo já refletem a lista completa usada para desenhar o catálogo de anti-patterns da skill (ver seção "Construção da Skill").
+
+### Projeto 1 — `code-smells-project` (Python/Flask — API de E-commerce)
+
+| # | Severidade | Problema | Onde | Por que é relevante |
+|---|---|---|---|---|
+| 1 | **CRITICAL** | SQL Injection generalizado por concatenação de string | `models.py` (~15 funções, ex.: `get_produto_por_id`, `criar_produto`, `login_usuario`, `buscar_produtos`) | Toda a camada de dados monta SQL concatenando valores vindos direto do request (`"WHERE id = " + str(id)`, `"WHERE email = '" + email + "'"`). Qualquer input malicioso no path, no body ou na query string compromete o banco inteiro — inclusive a rota de login, que compara senha em texto puro dentro da própria query. |
+| 2 | **CRITICAL** | Endpoint administrativo executando SQL arbitrário e endpoint destrutivo sem autenticação | `app.py:59-78` (`/admin/query`) e `app.py:52-58` (`/admin/reset-db`) | `/admin/query` recebe uma string SQL do corpo da requisição e executa via `cursor.execute(query)` sem nenhuma validação — é uma backdoor de execução arbitrária de SQL exposta publicamente. `/admin/reset-db` apaga todas as tabelas sem exigir autenticação nem confirmação. |
+| 3 | **CRITICAL** | `SECRET_KEY` hardcoded e vazada na resposta de `/health` | `app.py:8` e `controllers.py:289` (`health_check`) | A chave de assinatura de sessão está fixa no código-fonte versionado, e o próprio endpoint de health-check a devolve em texto puro no JSON, junto com `debug: True` — qualquer cliente externo consegue ler o segredo direto da API. |
+| 4 | **HIGH** | Senhas armazenadas e retornadas em texto puro | `models.py` (`login_usuario`, `criar_usuario`) e `controllers.py` (`listar_usuarios`, `buscar_usuario`) | Não existe nenhum hashing — a senha do usuário é gravada como veio, comparada como string na query de login, e devolvida integralmente nos endpoints de listagem de usuários. |
+| 5 | **MEDIUM** | Queries N+1 dentro de loop | `models.py::get_pedidos_usuario` e `get_todos_pedidos` | Para cada pedido, o código abre um novo cursor para buscar os itens, e para cada item abre outro cursor para buscar o nome do produto — 1 lista de pedidos gera dezenas de round-trips ao banco em vez de um JOIN. |
+| 6 | **MEDIUM** | Validação de negócio duplicada e hardcoded em cascata de `if` | `controllers.py::criar_produto`/`atualizar_produto` | A lista de categorias válidas é declarada inline dentro da função (não é uma constante compartilhada), e a mesma sequência de 6+ validações se repete quase idêntica entre criar e atualizar produto. |
+| 7 | **LOW** | Efeito colateral de notificação (I/O) misturado no controller | `controllers.py::criar_pedido` (3 `print()` simulando email/SMS/push) | Simulação de disparo de notificação vive dentro do mesmo handler HTTP que trata a criação do pedido, sem nenhuma camada de serviço — dificulta testar e reaproveitar a lógica de notificação. |
+| 8 | **LOW** | Nomenclatura inconsistente e falta de padronização de resposta | `controllers.py` (mistura de `"erro"`/`"dados"`/`"mensagem"`/`"sucesso"` como chaves ad-hoc em cada função) | Cada endpoint decide seu próprio formato de resposta JSON, sem um padrão único de sucesso/erro — aumenta o custo de integração para qualquer cliente da API. |
+
+### Projeto 2 — `ecommerce-api-legacy` (Node.js/Express — LMS API com checkout)
+
+| # | Severidade | Problema | Onde | Por que é relevante |
+|---|---|---|---|---|
+| 1 | **CRITICAL** | "God Manager" concentrando roteamento, acesso a dados e regra de negócio | `src/AppManager.js` (141 linhas: `initDb` + `setupRoutes` inteiros na mesma classe) | Uma única classe cria o schema do banco, define todas as rotas HTTP e implementa a regra de aprovação de pagamento no mesmo escopo — viola completamente a separação de camadas do MVC, exatamente o cenário de "God Class" descrito na definição de severidade CRITICAL do desafio. |
+| 2 | **CRITICAL** | Credenciais e chave de gateway de pagamento hardcoded | `src/utils.js:2-6` (`dbPass`, `paymentGatewayKey: "pk_live_..."`, `smtpUser`) | Chave de produção de um gateway de pagamento fica hardcoded e versionada no repositório — comprometimento imediato caso o código vaze ou seja publicado. |
+| 3 | **CRITICAL** | "Hash" de senha falso (não é criptografia real) | `src/utils.js::badCrypto` (Base64 repetido 10.000 vezes, cortado em 10 caracteres) | Não usa nenhum algoritmo de hash — é Base64 (reversível) repetido, e ainda trunca o resultado, o que aumenta a chance de colisão. Uma senha "protegida" assim é equivalente a texto puro para qualquer atacante. |
+| 4 | **HIGH** | N+1 assíncrono com controle manual de callbacks aninhados | `src/AppManager.js::/api/admin/financial-report` (`forEach` de cursos → `forEach` de matrículas → `get` de usuário → `get` de pagamento, tudo em callback) | Em vez de `Promise.all`/`async-await`, o código usa contadores manuais (`coursesPending`, `enrPending`) para saber quando todas as callbacks assíncronas terminaram — frágil, difícil de entender e propenso a bugs de contagem (race conditions silenciosas). |
+| 5 | **MEDIUM** | Falta de integridade referencial ao deletar usuário | `src/AppManager.js::DELETE /api/users/:id` | O próprio comentário no código admite o problema ("matrículas e pagamentos ficaram sujos no banco") — deletar um usuário não remove (nem trata) os registros filhos relacionados. |
+| 6 | **MEDIUM** | Estado mutável global compartilhado entre requisições | `src/utils.js` (`globalCache = {}`, `totalRevenue = 0` como variáveis de módulo) | Variáveis de nível de módulo são lidas/escritas por qualquer request concorrente — não há isolamento por requisição, o que gera condições de corrida em produção sob carga. |
+| 7 | **LOW** | Tratamento de erro inconsistente | Vários callbacks em `src/AppManager.js` (parâmetro `err` frequentemente ignorado ou tratado de forma diferente a cada rota) | Não existe um padrão único de tratamento/formatação de erro — cada rota decide individualmente o que fazer quando a query falha. |
+
+### Projeto 3 — `task-manager-api` (Python/Flask — API de Task Manager, parcialmente organizado)
+
+| # | Severidade | Problema | Onde | Por que é relevante |
+|---|---|---|---|---|
+| 1 | **CRITICAL** | Hash de senha com MD5 e vazamento do campo `password` na serialização | `models/user.py:29,32` (`hashlib.md5`) e `to_dict()` (retorna `password`) | MD5 é criptograficamente quebrado para senhas (ataques de força bruta/rainbow table são triviais), e o campo de senha (mesmo hasheada) é devolvido em toda resposta de usuário — duplo problema de segurança. |
+| 2 | **HIGH** | Lógica de negócio duplicada em 4+ lugares | `models/task.py::is_overdue`, `routes/task_routes.py` (2x), `routes/user_routes.py`, `routes/report_routes.py` (2x) — mesmo bloco `if due_date < utcnow(): if status not in (...)` | Mesmo cálculo de "atraso" é reimplementado manualmente em cada rota em vez de reutilizar o método do model — qualquer mudança na regra de negócio exige editar 5+ arquivos, com alto risco de divergência silenciosa entre eles. |
+| 3 | **MEDIUM** | Queries N+1 em relatórios e endpoints de usuário | `routes/report_routes.py::summary_report` (loop `for u in users: Task.query.filter_by(...)`) e `routes/user_routes.py::get_user_tasks` | O relatório de produtividade por usuário dispara uma query de tasks por usuário dentro de um loop Python, em vez de agregar no banco — degrada rapidamente com o crescimento da base. |
+| 4 | **MEDIUM** | Uso de APIs deprecated do próprio Flask/SQLAlchemy | `datetime.utcnow()` (~20 ocorrências em `models/`, `routes/`, `services/`, `seed.py`) e `Model.query.get(id)` (12 ocorrências em `routes/*.py`) | `datetime.utcnow()` está deprecated desde o Python 3.12 e `Query.get()` é o padrão legado do SQLAlchemy 1.x — ambos emitem warnings e têm substitutos modernos (`datetime.now(timezone.utc)` e `db.session.get()`), sinal de dívida técnica acumulada mesmo num projeto "organizado". |
+| 5 | **LOW** | Código morto: serviço e função nunca usados | `services/notification_service.py` (classe inteira nunca importada) e `utils/helpers.py::process_task_data` (nunca chamada) | Ambos duplicam funcionalidade que deveria estar centralizada (envio de notificação, validação de payload de task) mas nunca chegaram a ser conectados ao fluxo real da aplicação — aumentam a superfície de manutenção sem entregar valor. |
+| 6 | **LOW** | Dependências instaladas e nunca utilizadas | `requirements.txt` (`marshmallow`, `requests`, `python-dotenv`) | Três das seis dependências declaradas nunca são importadas em nenhum arquivo do projeto — aumentam a superfície de instalação/segurança (CVEs de pacotes não usados) sem necessidade.
