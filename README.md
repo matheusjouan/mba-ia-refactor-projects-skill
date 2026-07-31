@@ -492,3 +492,151 @@ Análise de código feita antes de construir a skill, para entender concretament
 | 4 | **MEDIUM** | Uso de APIs deprecated do próprio Flask/SQLAlchemy | `datetime.utcnow()` (~20 ocorrências em `models/`, `routes/`, `services/`, `seed.py`) e `Model.query.get(id)` (12 ocorrências em `routes/*.py`) | `datetime.utcnow()` está deprecated desde o Python 3.12 e `Query.get()` é o padrão legado do SQLAlchemy 1.x — ambos emitem warnings e têm substitutos modernos (`datetime.now(timezone.utc)` e `db.session.get()`), sinal de dívida técnica acumulada mesmo num projeto "organizado". |
 | 5 | **LOW** | Código morto: serviço e função nunca usados | `services/notification_service.py` (classe inteira nunca importada) e `utils/helpers.py::process_task_data` (nunca chamada) | Ambos duplicam funcionalidade que deveria estar centralizada (envio de notificação, validação de payload de task) mas nunca chegaram a ser conectados ao fluxo real da aplicação — aumentam a superfície de manutenção sem entregar valor. |
 | 6 | **LOW** | Dependências instaladas e nunca utilizadas | `requirements.txt` (`marshmallow`, `requests`, `python-dotenv`) | Três das seis dependências declaradas nunca são importadas em nenhum arquivo do projeto — aumentam a superfície de instalação/segurança (CVEs de pacotes não usados) sem necessidade.
+
+## Construção da Skill
+
+A skill `refactor-arch` foi construída dentro de `code-smells-project/.claude/skills/refactor-arch/` e depois copiada, sem nenhuma alteração, para os outros dois projetos — essa cópia literal (via `cp -r`) foi o próprio teste de agnosticismo: se a skill precisasse de ajuste para funcionar em Node/Express ou no projeto já parcialmente organizado, ela não seria realmente agnóstica.
+
+### Decisões de design
+
+- **`SKILL.md` como processo, arquivos de referência como conhecimento.** O `SKILL.md` só descreve as 3 fases e quando pausar para confirmação; todo o conhecimento de domínio (o que é um anti-pattern, qual severidade, como corrigir) vive nos 5 arquivos de referência. Isso significa que, para ensinar a skill um anti-pattern novo, basta editar `anti-patterns-catalog.md` — nunca o processo em si.
+- **Sinais de detecção acionáveis, não descrições vagas.** Cada anti-pattern do catálogo tem um sinal de detecção concreto (ex.: regex `execute\(\s*["'].*["']\s*\+` para SQL Injection, "variável de módulo reatribuída dentro de um handler" para estado global mutável) em vez de "código mal escrito". Isso foi decisivo para a skill realmente *encontrar* os problemas nos 3 projetos, e não apenas produzir texto genérico.
+- **Mapeamento de papéis MVC agnóstico de nome de pasta.** As guidelines de arquitetura não fixam nomes de diretório — definem o *papel* (Model, Controller, Service, Routing, Infra, Config, Middleware) e uma tabela de como esse papel se chama idiomaticamente em Flask (`models/`, `views/`) vs Express (`repositories/`, `routes/`). Isso permitiu que a mesma skill produzisse `controllers/produto_controller.py` no projeto 1 e `controllers/checkoutController.js` no projeto 2 sem nenhuma instrução condicional por linguagem no `SKILL.md`.
+- **Playbook com transformação 1:1 por anti-pattern.** Cada padrão de refatoração (RF-01 a RF-12) resolve um anti-pattern específico do catálogo, com exemplo antes/depois em Python *e* JavaScript quando aplicável. Isso manteve a Fase 3 consistente entre execuções — a skill não "inventa" uma correção diferente a cada vez para o mesmo problema.
+
+### Anti-patterns incluídos e por quê
+
+O catálogo tem 15 anti-patterns (acima do mínimo de 8), cobrindo as 4 severidades e a detecção obrigatória de APIs deprecated (`datetime.utcnow()`, `Model.query.get()` no ecossistema Flask/SQLAlchemy). Os itens foram escolhidos por aparecerem de forma real nos 3 projetos durante a análise manual — nenhum é hipotético: SQL Injection por concatenação, credenciais hardcoded, hash de senha fraco e God Object/Manager cobrem os problemas CRITICAL/HIGH mais graves; duplicação de regra de negócio, estado global mutável, N+1 e APIs deprecated cobrem os MEDIUM; código morto e dependências não usadas cobrem os LOW. Essa distribuição não foi definida a priori — emergiu diretamente da análise manual dos 3 projetos.
+
+### Como a skill garante agnosticismo de tecnologia
+
+1. A Fase 1 nunca assume uma stack — ela deduz linguagem/framework a partir de artefatos genéricos (`requirements.txt` vs `package.json`, padrões de import, `app.route` vs `router.get`), descritos em `project-analysis.md`.
+2. Os sinais de detecção do catálogo têm uma variante por stack quando o anti-pattern se manifesta de forma diferente (ex.: N+1 síncrono em loop `for` no Flask vs. callback assíncrono aninhado com contador manual no Express).
+3. A estrutura MVC-alvo é definida por papel, não por nome de pasta fixo (ver tabela em `mvc-architecture-guidelines.md`).
+4. O teste definitivo de agnosticismo foi prático: a mesma pasta `.claude/skills/refactor-arch/`, copiada byte a byte, produziu resultados corretos nos 3 projetos (Flask cru, Express com callback hell, Flask parcialmente organizado) sem editar nenhum arquivo de referência entre execuções.
+
+### Desafios encontrados
+
+- **N+1 além do documentado.** Durante a Fase 3 do projeto 3, apareceu a mesma classe de problema (N+1) em `get_categories`/`get_users` (contagem de tasks por categoria/usuário dentro de um loop), além dos dois pontos já documentados na auditoria. Resolvido aplicando o mesmo padrão RF-08 (agregação via `GROUP BY`) de forma consistente, mesmo sem um finding específico para cada ocorrência.
+- **Naive vs. aware datetime ao corrigir `datetime.utcnow()`.** A correção "óbvia" do anti-pattern de API deprecated seria trocar `datetime.utcnow()` por `datetime.now(timezone.utc)` diretamente — mas isso quebra a comparação com colunas `DateTime` do SQLite, que voltam do banco sem timezone (naive), gerando `TypeError` ao comparar naive com aware. A correção real foi um helper `utc_now()` que usa `datetime.now(timezone.utc).replace(tzinfo=None)`, eliminando a chamada deprecated mas preservando naive-datetime em todo o projeto.
+- **Regra de negócio "invisível" já existente.** No projeto 3, `models/task.py` já tinha um método `is_overdue()` correto, mas nenhuma rota o chamava — as 6 reimplementações manuais do mesmo cálculo o ignoravam completamente. Isso não seria pego por uma busca ingênua por "código faltando"; só apareceu ao cruzar a definição do método com o grep por padrões duplicados de `if due_date <`.
+- **Decisão sobre código morto com valor de negócio ambíguo.** `services/notification_service.py` (projeto 3) nunca era chamado, mas não era código sem propósito — só estava desconectado. A decisão (documentada no relatório) foi removê-lo em vez de conectá-lo, porque nenhuma rota do domínio de tasks tinha um gatilho natural de notificação, e forçar uma integração só para "usar" o código seria escopo além do que a auditoria pedia.
+
+## Resultados
+
+### Resumo dos relatórios de auditoria
+
+| Projeto | Stack | Findings | CRITICAL | HIGH | MEDIUM | LOW |
+|---|---|---|---|---|---|---|
+| 1 — code-smells-project | Python/Flask | 12 | 4 | 3 | 3 | 2 |
+| 2 — ecommerce-api-legacy | Node/Express | 10 | 3 | 2 | 3 | 2 |
+| 3 — task-manager-api | Python/Flask (parcial) | 9 | 1 | 2 | 3 | 3 |
+
+Relatórios completos em [`reports/audit-project-1.md`](reports/audit-project-1.md), [`reports/audit-project-2.md`](reports/audit-project-2.md) e [`reports/audit-project-3.md`](reports/audit-project-3.md).
+
+### Comparação antes/depois
+
+**Projeto 1 (code-smells-project):** 4 arquivos na raiz (`app.py`, `controllers.py`, `models.py`, `database.py`) → `src/{config,controllers,models,services,schemas,infra,middlewares,views}` + `app.py` fino. SQL Injection eliminado (queries parametrizadas), `/admin/query` (backdoor de SQL arbitrário) removido, `/admin/reset-db` agora exige token, senha com hash real, N+1 de pedidos virou 1 JOIN.
+
+**Projeto 2 (ecommerce-api-legacy):** God Manager (`AppManager.js`, 141 linhas fazendo tudo) → `src/{config,controllers,services,repositories,infra,middlewares,routes}`. Callback hell do relatório financeiro virou `Promise.all`, regra de aprovação de pagamento isolada em `paymentService`, hash de senha reversível trocado por `crypto.scrypt`, `DELETE /api/users/:id` agora remove matrículas/pagamentos em cascade (confirmado via teste).
+
+**Projeto 3 (task-manager-api):** já tinha `models/`, `routes/`, `services/`, `utils/`, mas com regra de negócio dentro das rotas → `src/{config,controllers,models,schemas,infra,middlewares,utils,views}`, com uma camada de `controllers/` nova extraindo a lógica que estava em `routes/*.py`. MD5 trocado por hash real, cálculo de "atraso" consolidado num único método (antes duplicado em 6 lugares), `datetime.utcnow()`/`Model.query.get()` deprecated substituídos, código morto e dependências não usadas removidos.
+
+### Checklist de validação
+
+| Critério | Projeto 1 | Projeto 2 | Projeto 3 |
+|---|---|---|---|
+| Fase 1 detecta stack corretamente | ✅ | ✅ | ✅ |
+| Fase 2 segue o template de relatório | ✅ | ✅ | ✅ |
+| Findings com arquivo + linha exatos | ✅ | ✅ | ✅ |
+| Findings ordenados CRITICAL → LOW | ✅ | ✅ | ✅ |
+| Mínimo de 5 findings | ✅ (12) | ✅ (10) | ✅ (9) |
+| Detecção de APIs deprecated | ✅ (`DEBUG` hardcoded) | — (n/a nesta stack) | ✅ (`datetime.utcnow`, `Query.get`) |
+| Fase 2 pausa e pede confirmação | ✅ | ✅ | ✅ |
+| Estrutura de diretórios em padrão MVC | ✅ | ✅ | ✅ |
+| Configuração extraída, sem hardcoded | ✅ | ✅ | ✅ |
+| Models abstraindo dados | ✅ | ✅ (`repositories/`) | ✅ |
+| Views/Routes separadas | ✅ | ✅ | ✅ |
+| Controllers concentram o fluxo | ✅ | ✅ | ✅ |
+| Error handling centralizado | ✅ | ✅ | ✅ |
+| Entry point claro | ✅ | ✅ | ✅ |
+| Aplicação inicia sem erros | ✅ | ✅ | ✅ |
+| Endpoints originais respondem | ✅ | ✅ | ✅ |
+
+### Logs de validação (aplicações rodando após a refatoração)
+
+**Projeto 1** — boot + smoke tests:
+```
+SERVIDOR INICIADO / Rodando em http://localhost:5000
+GET /produtos -> 200 | GET /produtos/1 -> 200 | GET /usuarios -> 200
+POST /login (correto) -> 200 | POST /login (errado) -> 401
+POST /pedidos -> 201 | POST /admin/reset-db sem token -> 401
+POST /admin/query (removido) -> 404
+```
+
+**Projeto 2** — boot + smoke tests:
+```
+LMS API rodando na porta 3000...
+POST /api/checkout (cartão válido) -> 200 {"msg":"Sucesso","enrollment_id":2}
+POST /api/checkout (cartão recusado) -> 400
+GET /api/admin/financial-report -> 200 (Promise.all, sem contador manual)
+DELETE /api/users/1 -> matrícula e pagamento removidos em cascade (confirmado no relatório seguinte)
+```
+
+**Projeto 3** — boot + smoke tests:
+```
+Serving Flask app 'app_factory' / Debug mode: off
+GET /tasks -> 200 | GET /tasks/1 -> 200 (overdue: true, calculado por is_overdue())
+GET /reports/summary -> 200 (overdue.count: 2, bate com os dados do seed)
+POST /login (correto) -> 200 | POST /login (errado) -> 401
+```
+
+### Observações sobre o comportamento em stacks diferentes
+
+A skill se comportou de forma consistente nos 3 projetos, mas a Fase 3 precisou de julgamento diferente em cada um: no projeto 1 (monólito cru), a maior parte do trabalho foi *criar* camadas que não existiam; no projeto 2, o desafio foi *decompor* uma única classe já grande; no projeto 3, o trabalho foi *extrair* lógica que vazava de uma estrutura já parcialmente correta, sem recriar o que já estava certo. As guidelines de arquitetura (regra "não force uma camada que o projeto não precisa") foram o que permitiu essa adaptação sem exigir instruções diferentes por projeto no `SKILL.md`.
+
+## Como Executar
+
+### Pré-requisitos
+
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) instalado e configurado.
+- Python 3.12+ (projetos 1 e 3) com um ambiente virtual (`.venv`) e as dependências de cada `requirements.txt` instaladas.
+- Node.js 18+ (projeto 2) com `npm install` executado dentro de `ecommerce-api-legacy/`.
+
+### Executar cada projeto
+
+```bash
+# Projeto 1 — Python/Flask
+cd code-smells-project
+.venv/Scripts/python.exe app.py     # Windows; use .venv/bin/python em Linux/Mac
+# Servidor em http://localhost:5000
+
+# Projeto 2 — Node/Express
+cd ../ecommerce-api-legacy
+npm install
+node src/app.js
+# Servidor em http://localhost:3000
+
+# Projeto 3 — Python/Flask (parcialmente organizado)
+cd ../task-manager-api
+.venv/Scripts/python.exe seed.py    # popula o banco antes do primeiro boot
+.venv/Scripts/python.exe app.py
+# Servidor em http://localhost:5000
+```
+
+### Executar a skill novamente (auditoria + refatoração)
+
+Dentro de cada projeto, com o Claude Code instalado:
+
+```bash
+claude "/refactor-arch"
+```
+
+A skill vai (1) imprimir o resumo da Fase 1, (2) gerar e salvar o relatório de auditoria em `reports/audit-project-N.md`, pausando para confirmação, e (3) só reestruturar o código após a confirmação explícita.
+
+### Como validar que a refatoração funcionou
+
+1. Subir o servidor do projeto (comandos acima) e confirmar que não há traceback no console.
+2. Testar os endpoints originais listados no relatório de auditoria correspondente (`reports/audit-project-N.md`) — todos devem responder com o status esperado.
+3. Conferir que os endpoints removidos por serem vulnerabilidades puras (ex.: `/admin/query` no projeto 1) agora retornam 404.
+4. Comparar a estrutura de diretórios resultante (`src/`) com a tabela de mapeamento MVC em `code-smells-project/.claude/skills/refactor-arch/references/mvc-architecture-guidelines.md`.
