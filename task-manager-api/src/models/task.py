@@ -1,5 +1,11 @@
+from sqlalchemy import and_
+
 from infra.database import db
 from utils.helpers import utc_now
+
+# Status em que uma task não pode mais ficar atrasada. Fonte única da regra de
+# atraso, usada tanto em memória (is_overdue) quanto em query (overdue_filter).
+CLOSED_STATUSES = ("done", "cancelled")
 
 
 class Task(db.Model):
@@ -41,4 +47,13 @@ class Task(db.Model):
     def is_overdue(self):
         if not self.due_date:
             return False
-        return self.due_date < utc_now() and self.status not in ("done", "cancelled")
+        return self.due_date < utc_now() and self.status not in CLOSED_STATUSES
+
+    @classmethod
+    def overdue_filter(cls):
+        """Mesma regra de is_overdue(), como expressão SQL para Query.filter()."""
+        return and_(
+            cls.due_date.isnot(None),
+            cls.due_date < utc_now(),
+            cls.status.notin_(CLOSED_STATUSES),
+        )

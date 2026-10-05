@@ -30,6 +30,3 @@ class User(db.Model):
 
     def check_password(self, pwd):
         return check_password_hash(self.password, pwd)
-
-    def is_admin(self):
-        return self.role == "admin"

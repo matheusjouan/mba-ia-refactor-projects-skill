@@ -6,7 +6,7 @@ from models.category import Category
 from models.task import Task
 from models.user import User
 from schemas.validators import validar_task
-from utils.helpers import calculate_percentage, utc_now
+from utils.helpers import calculate_percentage
 
 
 def get_tasks():
@@ -90,11 +90,7 @@ def task_stats():
     in_progress = Task.query.filter_by(status="in_progress").count()
     done = Task.query.filter_by(status="done").count()
     cancelled = Task.query.filter_by(status="cancelled").count()
-    overdue = Task.query.filter(
-        Task.due_date.isnot(None),
-        Task.due_date < utc_now(),
-        Task.status.notin_(["done", "cancelled"]),
-    ).count()
+    overdue = Task.query.filter(Task.overdue_filter()).count()
 
     return jsonify({
         "total": total,

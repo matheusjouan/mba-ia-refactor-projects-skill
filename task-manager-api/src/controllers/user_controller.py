@@ -1,5 +1,6 @@
 from flask import jsonify, request
 from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 
 from infra.database import db
 from models.task import Task
@@ -25,7 +26,7 @@ def get_user(user_id):
         return jsonify({"error": "Usuário não encontrado"}), 404
 
     dados = usuario.to_dict()
-    dados["tasks"] = [t.to_dict() for t in Task.query.filter_by(user_id=user_id).all()]
+    dados["tasks"] = [t.to_dict() for t in _tasks_do_usuario(user_id)]
     return jsonify(dados), 200
 
 
@@ -81,8 +82,16 @@ def get_user_tasks(user_id):
     usuario = db.session.get(User, user_id)
     if not usuario:
         return jsonify({"error": "Usuário não encontrado"}), 404
-    tasks = Task.query.filter_by(user_id=user_id).all()
-    return jsonify([t.to_dict() for t in tasks]), 200
+    return jsonify([t.to_dict() for t in _tasks_do_usuario(user_id)]), 200
+
+
+def _tasks_do_usuario(user_id):
+    # to_dict() lê user e category; carregar junto evita uma query por task
+    return (
+        Task.query.options(joinedload(Task.user), joinedload(Task.category))
+        .filter_by(user_id=user_id)
+        .all()
+    )
 
 
 def login():

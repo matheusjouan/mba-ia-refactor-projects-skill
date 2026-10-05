@@ -18,11 +18,7 @@ def summary_report():
     status_counts = dict(db.session.query(Task.status, func.count(Task.id)).group_by(Task.status).all())
     priority_counts = dict(db.session.query(Task.priority, func.count(Task.id)).group_by(Task.priority).all())
 
-    overdue_tasks = Task.query.filter(
-        Task.due_date.isnot(None),
-        Task.due_date < utc_now(),
-        Task.status.notin_(["done", "cancelled"]),
-    ).all()
+    overdue_tasks = Task.query.filter(Task.overdue_filter()).all()
 
     seven_days_ago = utc_now() - timedelta(days=7)
     recent_tasks = Task.query.filter(Task.created_at >= seven_days_ago).count()

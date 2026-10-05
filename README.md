@@ -513,13 +513,24 @@ O catálogo tem 15 anti-patterns (acima do mínimo de 8), cobrindo as 4 severida
 1. A Fase 1 nunca assume uma stack — ela deduz linguagem/framework a partir de artefatos genéricos (`requirements.txt` vs `package.json`, padrões de import, `app.route` vs `router.get`), descritos em `project-analysis.md`.
 2. Os sinais de detecção do catálogo têm uma variante por stack quando o anti-pattern se manifesta de forma diferente (ex.: N+1 síncrono em loop `for` no Flask vs. callback assíncrono aninhado com contador manual no Express).
 3. A estrutura MVC-alvo é definida por papel, não por nome de pasta fixo (ver tabela em `mvc-architecture-guidelines.md`).
-4. O teste definitivo de agnosticismo foi prático: a mesma pasta `.claude/skills/refactor-arch/`, copiada byte a byte, produziu resultados corretos nos 3 projetos (Flask cru, Express com callback hell, Flask parcialmente organizado) sem editar nenhum arquivo de referência entre execuções.
+4. O teste definitivo de agnosticismo foi prático: a mesma pasta `.claude/skills/refactor-arch/`, copiada byte a byte, produziu resultados corretos nos 3 projetos (Flask cru, Express com callback hell, Flask parcialmente organizado). Quando a skill precisou de correção (ver "Consolidação incompleta de regra duplicada" abaixo), a mudança foi feita uma vez nos arquivos de referência e copiada de novo para os 3 projetos, que continuam com cópias idênticas.
 
 ### Desafios encontrados
 
 - **N+1 além do documentado.** Durante a Fase 3 do projeto 3, apareceu a mesma classe de problema (N+1) em `get_categories`/`get_users` (contagem de tasks por categoria/usuário dentro de um loop), além dos dois pontos já documentados na auditoria. Resolvido aplicando o mesmo padrão RF-08 (agregação via `GROUP BY`) de forma consistente, mesmo sem um finding específico para cada ocorrência.
 - **Naive vs. aware datetime ao corrigir `datetime.utcnow()`.** A correção "óbvia" do anti-pattern de API deprecated seria trocar `datetime.utcnow()` por `datetime.now(timezone.utc)` diretamente — mas isso quebra a comparação com colunas `DateTime` do SQLite, que voltam do banco sem timezone (naive), gerando `TypeError` ao comparar naive com aware. A correção real foi um helper `utc_now()` que usa `datetime.now(timezone.utc).replace(tzinfo=None)`, eliminando a chamada deprecated mas preservando naive-datetime em todo o projeto.
 - **Regra de negócio "invisível" já existente.** No projeto 3, `models/task.py` já tinha um método `is_overdue()` correto, mas nenhuma rota o chamava — as 6 reimplementações manuais do mesmo cálculo o ignoravam completamente. Isso não seria pego por uma busca ingênua por "código faltando"; só apareceu ao cruzar a definição do método com o grep por padrões duplicados de `if due_date <`.
+- **Consolidação incompleta de regra duplicada (apontada na revisão).** Na primeira entrega, o relatório do projeto 3 marcava como HIGH a regra de atraso duplicada e recomendava trocar todas as reimplementações por `Task.is_overdue()`. Mesmo assim, `task_stats` e `summary_report` continuaram com a regra escrita à mão, agora como filtro SQLAlchemy (`due_date < utc_now()` + `status.notin_(["done", "cancelled"])`). A causa estava na skill:
+  1. O playbook RF-09 só mostrava a consolidação da forma em memória (`if task.due_date < ...`).
+  2. Ao aplicar o RF-08 (trocar o loop que carregava a tabela inteira por uma query), a regra foi reescrita como filtro de banco e a duplicação voltou.
+  3. A Fase 3 não conferia se cada ocorrência listada no finding tinha sido resolvida.
+
+  A correção foi feita na skill, não só no código:
+  - **Playbook:** novo **RF-09b** (a regra fica no model nas duas formas, `is_overdue()` e `overdue_filter()`, derivadas da mesma constante `CLOSED_STATUSES`) e um aviso no RF-08.
+  - **Catálogo:** o AP-08 passou a detectar a regra também em filtros de ORM e em `WHERE` de SQL cru, e exige listar todas as ocorrências no finding.
+  - **SKILL.md:** novo passo obrigatório de **verificação de cobertura** na Fase 3, que refaz o grep dos sinais de cada finding no código refatorado e compara os valores calculados com a baseline.
+
+  Depois disso, o `task-manager-api` foi restaurado ao código legado e a skill rodou de novo do zero. Na nova execução, a verificação de cobertura também pegou um N+1 residual em `/users/<id>` e `/users/<id>/tasks`, causado por lazy load de `category` dentro de `to_dict()`, e o corrigiu com `joinedload`.
 - **Decisão sobre código morto com valor de negócio ambíguo.** `services/notification_service.py` (projeto 3) nunca era chamado, mas não era código sem propósito — só estava desconectado. A decisão (documentada no relatório) foi removê-lo em vez de conectá-lo, porque nenhuma rota do domínio de tasks tinha um gatilho natural de notificação, e forçar uma integração só para "usar" o código seria escopo além do que a auditoria pedia.
 
 ## Resultados
@@ -530,7 +541,7 @@ O catálogo tem 15 anti-patterns (acima do mínimo de 8), cobrindo as 4 severida
 |---|---|---|---|---|---|---|
 | 1 — code-smells-project | Python/Flask | 12 | 4 | 3 | 3 | 2 |
 | 2 — ecommerce-api-legacy | Node/Express | 10 | 3 | 2 | 3 | 2 |
-| 3 — task-manager-api | Python/Flask (parcial) | 9 | 1 | 2 | 3 | 3 |
+| 3 — task-manager-api | Python/Flask (parcial) | 14 | 2 | 4 | 4 | 4 |
 
 Relatórios completos em [`reports/audit-project-1.md`](reports/audit-project-1.md), [`reports/audit-project-2.md`](reports/audit-project-2.md) e [`reports/audit-project-3.md`](reports/audit-project-3.md).
 
@@ -540,7 +551,12 @@ Relatórios completos em [`reports/audit-project-1.md`](reports/audit-project-1.
 
 **Projeto 2 (ecommerce-api-legacy):** God Manager (`AppManager.js`, 141 linhas fazendo tudo) → `src/{config,controllers,services,repositories,infra,middlewares,routes}`. Callback hell do relatório financeiro virou `Promise.all`, regra de aprovação de pagamento isolada em `paymentService`, hash de senha reversível trocado por `crypto.scrypt`, `DELETE /api/users/:id` agora remove matrículas/pagamentos em cascade (confirmado via teste).
 
-**Projeto 3 (task-manager-api):** já tinha `models/`, `routes/`, `services/`, `utils/`, mas com regra de negócio dentro das rotas → `src/{config,controllers,models,schemas,infra,middlewares,utils,views}`, com uma camada de `controllers/` nova extraindo a lógica que estava em `routes/*.py`. MD5 trocado por hash real, cálculo de "atraso" consolidado num único método (antes duplicado em 6 lugares), `datetime.utcnow()`/`Model.query.get()` deprecated substituídos, código morto e dependências não usadas removidos.
+**Projeto 3 (task-manager-api):** já tinha `models/`, `routes/`, `services/`, `utils/`, mas com regra de negócio dentro das rotas → `src/{config,controllers,models,schemas,infra,middlewares,utils,views}`, com uma camada de `controllers/` nova extraindo a lógica que estava em `routes/*.py`. Outras mudanças:
+- MD5 trocado por hash real.
+- Regra de "atraso" (antes duplicada em 6 lugares) agora existe só em `src/models/task.py`, como `is_overdue()` (em memória) e `overdue_filter()` (query). `task_stats` e `summary_report` usam `Task.query.filter(Task.overdue_filter())`, e um grep pela condição fora do model não retorna nada.
+- `datetime.utcnow()`/`Model.query.get()` deprecated substituídos.
+- Exclusão de categoria desassocia as tasks.
+- Código morto e dependências não usadas removidos.
 
 ### Checklist de validação
 
@@ -550,7 +566,7 @@ Relatórios completos em [`reports/audit-project-1.md`](reports/audit-project-1.
 | Fase 2 segue o template de relatório | ✅ | ✅ | ✅ |
 | Findings com arquivo + linha exatos | ✅ | ✅ | ✅ |
 | Findings ordenados CRITICAL → LOW | ✅ | ✅ | ✅ |
-| Mínimo de 5 findings | ✅ (12) | ✅ (10) | ✅ (9) |
+| Mínimo de 5 findings | ✅ (12) | ✅ (10) | ✅ (14) |
 | Detecção de APIs deprecated | ✅ (`DEBUG` hardcoded) | — (n/a nesta stack) | ✅ (`datetime.utcnow`, `Query.get`) |
 | Fase 2 pausa e pede confirmação | ✅ | ✅ | ✅ |
 | Estrutura de diretórios em padrão MVC | ✅ | ✅ | ✅ |
@@ -584,11 +600,24 @@ DELETE /api/users/1 -> matrícula e pagamento removidos em cascade (confirmado n
 ```
 
 **Projeto 3** — boot + smoke tests:
+A mesma bateria de 39 requests rodou contra o código legado (baseline) e contra o refatorado, com o mesmo seed:
 ```
-Serving Flask app 'app_factory' / Debug mode: off
-GET /tasks -> 200 | GET /tasks/1 -> 200 (overdue: true, calculado por is_overdue())
-GET /reports/summary -> 200 (overdue.count: 2, bate com os dados do seed)
-POST /login (correto) -> 200 | POST /login (errado) -> 401
+Serving Flask app 'app_factory' / Debug mode: off   (sem traceback/warning no log)
+39/39 requests com o mesmo status code da baseline
+  GET /tasks, /tasks/<id>, /tasks/search, /tasks/stats, /users, /users/<id>, /users/<id>/tasks,
+  /categories, /reports/summary, /reports/user/<id> -> 200 | ids inexistentes -> 404
+  POST /tasks -> 201 (400 com payload inválido) | PUT/DELETE /tasks/<id> -> 200
+  POST /users -> 201 (409 email duplicado) | POST /login -> 200 (401 senha errada)
+  POST/PUT/DELETE /categories -> 201/200/404
+
+Regra de atraso: valor antes = valor depois, nos 2 momentos (seed e após escritas)
+  /tasks/stats overdue           2 = 2   |  2 = 2
+  /reports/summary overdue ids   [1, 4]  |  [4, 11]
+  /reports/user/1 overdue        2 = 2   |  2 = 2
+  /tasks, /tasks/1, /users/1/tasks (flags overdue) iguais
+
+Queries por endpoint (constantes, sem N+1): /tasks 1 | /users/1 2 | /users/1/tasks 2 | /categories 2
+DELETE /categories/4 -> 200, 0 tasks com category_id órfão
 ```
 
 ### Observações sobre o comportamento em stacks diferentes

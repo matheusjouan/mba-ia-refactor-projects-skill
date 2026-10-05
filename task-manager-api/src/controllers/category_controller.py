@@ -48,6 +48,8 @@ def delete_category(cat_id):
     categoria = db.session.get(Category, cat_id)
     if not categoria:
         return jsonify({"error": "Categoria não encontrada"}), 404
+    # Desassocia as tasks na mesma transação para não deixar category_id órfão
+    Task.query.filter_by(category_id=cat_id).update({"category_id": None})
     db.session.delete(categoria)
     db.session.commit()
     return jsonify({"message": "Categoria deletada"}), 200
