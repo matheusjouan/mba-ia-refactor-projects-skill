@@ -48,7 +48,7 @@ Total: <N> findings
 
 ## Regras de preenchimento
 
-- **File:** sempre caminho relativo à raiz do projeto + linha exata (`app.py:8`) ou intervalo (`models.py:45-52`). Nunca deixe genérico ("em algum lugar do models.py").
+- **File:** sempre caminho relativo à raiz do projeto + linha exata (`app.py:8`) ou intervalo (`models.py:45-52`). Nunca deixe genérico ("em algum lugar do models.py"). Se o finding agrupa várias ocorrências (regra duplicada, API deprecated), liste **todas**, separadas por vírgula. Para regra duplicada, agrupe por forma: `em memória: a.py:10-14, b.py:30-33; query: c.py:21-25; SQL: d.js:40`. Essa lista é o checklist que a Fase 3 precisa zerar.
 - **Description:** uma frase objetiva descrevendo o que o código faz de errado, sem jargão vago — "código ruim" não é aceitável, "SQL montado por concatenação de string dentro da função X" é.
 - **Impact:** a consequência prática e concreta (ex.: "compromete o banco inteiro via SQL Injection", "gera dezenas de round-trips ao banco por request").
 - **Recommendation:** aponte o padrão do playbook de refatoração que resolve o problema (ex.: "RF-01 — parametrizar a query").

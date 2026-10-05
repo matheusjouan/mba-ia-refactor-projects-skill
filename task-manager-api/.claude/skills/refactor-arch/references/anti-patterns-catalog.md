@@ -57,9 +57,16 @@ Cada anti-pattern abaixo tem um sinal de detecção **acionável** (o que procur
 ## MEDIUM
 
 ### AP-08 — Duplicação de regra de negócio
-**Sinal de detecção:** o mesmo bloco de condição/cálculo (3+ linhas, mesma lógica) aparece copiado em 2 ou mais arquivos/funções diferentes, em vez de centralizado em um método/função reutilizável.
-**Por que é MEDIUM:** qualquer mudança de regra exige editar múltiplos lugares, com risco de divergência silenciosa entre eles.
-**Correção:** ver playbook RF-09.
+**Sinal de detecção:** o mesmo bloco de condição/cálculo (3+ linhas, mesma lógica) aparece copiado em 2 ou mais arquivos/funções diferentes, em vez de centralizado em um método/função reutilizável. Procure a regra em **todas as formas** em que ela pode aparecer, porque todas contam como ocorrência do mesmo finding:
+- **Em memória:** `if`/ternário sobre atributos do objeto (`if t.due_date < now and t.status not in (...)`), `.filter(x => ...)`/list comprehension sobre uma lista carregada.
+- **Em query de ORM:** os mesmos campos e valores dentro de `.filter(...)`/`.where(...)`/`filter_by` (ex.: `Model.due_date < now` junto com `Model.status.notin_([...])`).
+- **Em SQL cru:** a mesma condição numa cláusula `WHERE` (`due_date < ? AND status NOT IN (...)`).
+
+Como fazer a varredura: identifique os campos e valores literais que formam a regra (ex.: o campo de data comparado com "agora" e a lista de status fechados) e faça grep por cada um deles no projeto inteiro, não só pelo trecho `if` que motivou o finding. Se o model já tem um método que implementa a regra, toda ocorrência fora dele é duplicação.
+
+**Por que é MEDIUM:** qualquer mudança de regra exige editar múltiplos lugares, com risco de divergência silenciosa entre eles. **Escale para HIGH** quando a regra aparece em 4 ou mais lugares, ou quando o model já tem um método que a implementa e o código o ignora.
+**Registro no relatório:** o campo `File` do finding deve listar **cada** ocorrência com arquivo e linhas, separando as formas (em memória / query / SQL). A Fase 3 usa essa lista como checklist do que precisa ser substituído.
+**Correção:** ver playbook RF-09 (forma em memória) e RF-09b (forma de query).
 
 ### AP-09 — Estado global mutável compartilhado entre requisições
 **Sinal de detecção:** variável definida no escopo de módulo (fora de qualquer função/classe) que é lida e reatribuída dentro de handlers de rota (`let cache = {}`, `db_connection = None` com lazy-init global), sem isolamento por requisição.

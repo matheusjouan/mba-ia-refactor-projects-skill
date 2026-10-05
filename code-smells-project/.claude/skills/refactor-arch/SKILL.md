@@ -54,6 +54,7 @@ Objetivo: cruzar o código analisado contra o catálogo de anti-patterns e produ
 
 1. Para cada anti-pattern de `references/anti-patterns-catalog.md`, procure ativamente pelos sinais de detecção descritos (grep por padrões de código, não apenas leitura superficial) em todos os arquivos-fonte listados na Fase 1.
 2. Para cada achado (finding), registre: nome do anti-pattern, severidade (CRITICAL/HIGH/MEDIUM/LOW conforme o catálogo), arquivo e **linha ou intervalo de linhas exato**, descrição do problema, impacto concreto, e recomendação (referenciando o padrão do playbook que resolve o problema).
+   - Para findings que agrupam várias ocorrências (ex.: regra de negócio duplicada, API deprecated), liste **cada** ocorrência com arquivo e linha no campo `File`. Para regra duplicada, inclua todas as formas: em memória (`if`/`filter` sobre objetos), em query de ORM e em SQL cru (ver AP-08). Essa lista vira o checklist da Fase 3.
 3. Preste atenção especial à detecção de **APIs deprecated** (ver seção específica no catálogo) — isso é obrigatório no relatório sempre que aplicável à stack detectada.
 4. Monte o relatório seguindo **exatamente** o template de `references/audit-report-template.md`, com os findings **ordenados por severidade decrescente (CRITICAL → HIGH → MEDIUM → LOW)**.
 5. Garanta um mínimo de 5 findings, com pelo menos 1 CRITICAL ou HIGH, 2 MEDIUM e 2 LOW — se a varredura inicial não atingir isso, aprofunde a busca (heurísticas adicionais, duplicação de código, dependências não usadas, nomenclatura) antes de fechar o relatório.
@@ -73,13 +74,19 @@ Só execute esta fase após confirmação explícita do usuário na Fase 2.
 2. Para cada finding do relatório, aplique o padrão de transformação correspondente em `references/refactoring-playbook.md`. Não invente uma correção diferente do playbook sem justificativa — o playbook existe para manter consistência entre projetos.
 3. Extraia toda configuração e segredo hardcoded para uma camada de config, lendo de variáveis de ambiente com defaults seguros apenas para desenvolvimento.
 4. Elimine qualquer endpoint/rota que seja puramente uma vulnerabilidade sem valor de produto (ex.: execução de SQL arbitrário vindo do request) — não apenas proteja, remova.
-5. Antes de mover código, **capture a lista de rotas/endpoints existentes** (método HTTP + path) para poder comparar depois.
-6. Depois de reestruturar, valide a aplicação:
+5. Antes de mover código, **capture a lista de rotas/endpoints existentes** (método HTTP + path) e, se possível, as respostas de referência dos endpoints que expõem valores calculados (contadores, relatórios) para poder comparar depois.
+6. **Verificação de cobertura dos findings** (obrigatória, antes de validar a aplicação). Para cada finding do relatório:
+   - Percorra a lista de ocorrências do campo `File` e confirme que cada uma foi substituída pelo padrão do playbook.
+   - Refaça o grep dos sinais de detecção do anti-pattern no código **refatorado** (ignore `.claude/`, `.venv/`, `node_modules/`). Para regra de negócio duplicada (AP-08), a regra só pode aparecer no ponto único do model, nas formas em memória e de query (RF-09/RF-09b). Qualquer ocorrência em controller, service, view ou repository significa que o finding **não** foi resolvido.
+   - Atenção às regressões: ao trocar um loop por query (RF-08), é comum reescrever a regra inline como filtro de banco. Isso reintroduz a duplicação e deve ser corrigido usando o filtro do model.
+   - Se sobrar alguma ocorrência, corrija e repita o grep até zerar.
+7. Depois de reestruturar, valide a aplicação:
    - Suba o processo da aplicação (comando idiomático da stack: `python app.py` dentro do venv do projeto, `node src/app.js`, etc.) e confirme que ele continua rodando após alguns segundos, sem traceback/erro fatal no stderr.
    - Faça requisições de smoke test contra os mesmos endpoints capturados no passo 5 e confirme que os status codes fazem sentido (equivalentes aos observados antes da refatoração, exceto endpoints removidos por serem vulnerabilidades puras, que devem agora responder 404).
+   - Para os endpoints com valores calculados capturados no passo 5, compare os valores com a referência (mesmo seed). Uma consolidação de regra não pode mudar o resultado.
    - Encerre o processo ao final do teste.
-7. Se algum boot ou endpoint falhar, corrija o código até a validação passar — nunca declare sucesso com uma falha conhecida.
-8. Imprima um resumo final neste formato:
+8. Se algum boot, endpoint ou verificação de cobertura falhar, corrija o código até passar. Nunca declare sucesso com uma falha conhecida.
+9. Imprima um resumo final neste formato:
 
 ```
 ================================
@@ -92,6 +99,10 @@ Validation
   ✓/✗ Application boots without errors
   ✓/✗ All endpoints respond correctly
   ✓/✗ Findings from the audit report were addressed
+
+Findings coverage
+  ✓/✗ [SEVERITY] <nome do finding> — <N>/<N> ocorrências resolvidas (<evidência: grep sem resultados fora de X>)
+  ...
 ================================
 ```
 
